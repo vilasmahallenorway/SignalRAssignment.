@@ -1,0 +1,121 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.SignalR.Client
+@using System.Security.Cryptography;
+@using System.Text;
+@inject NavigationManager NavManager
+@implements IAsyncDisposable
+
+<div class="form-group">
+    <div class="mb-3">
+        <label class="form-label">User:</label>
+        <input @bind="userInput" class="form-control" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Message:</label>
+        <input @bind="messageInput" class="form-control" />
+    </div>
+</div>
+
+<button @onclick="Send" disabled="@(IsConnected == false)" class="btn btn-primary">Send</button>
+
+<hr />
+
+<ul>
+    @foreach (string message in messages)
+    {
+        <li>@message</li>
+    }
+</ul>
+
+@code {
+    private string? userInput;
+    private string? messageInput;
+
+    private int randomStringMaxlength = 10;
+
+    private HubConnection? hubConnection;
+    private List<string> messages = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(NavManager.ToAbsoluteUri("/myhub"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        hubConnection.On<string, string>("ReceiveMessage", (userAction, message) =>
+        {
+            string randomString = string.Empty;
+            ;
+
+            var formattedMessage = $"{userAction}: {message}";
+            messages.Add(formattedMessage);
+            InvokeAsync(StateHasChanged);
+
+            //
+            if (userAction == "Client:Start")
+            {
+                randomString = RandomString();
+                hubConnection.SendAsync("SendMessage", "Server:Token", randomString);
+            }
+
+            // compare client signatjure with local and response to client accordingly
+            if (userAction == "Client:Signature")
+            {
+                string localSignature = ComputeSignature(randomString);
+                string clientSignature = message;
+                string serverAction = string.Empty;
+
+                if (localSignature == clientSignature)
+                {
+                    serverAction = "Approved";
+                }
+                else { serverAction = "Rejected"; }
+
+                hubConnection.SendAsync("SendMessage", "Server:Authentication", serverAction);
+            }
+        });
+
+        await hubConnection.StartAsync();
+    }
+
+    private async Task Send()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.SendAsync("SendMessage", userInput, messageInput);
+        }
+    }
+
+    public bool IsConnected => hubConnection?.State == HubConnectionState.Connected;
+
+    // Method to generate a random string of a given max length 10
+    private string RandomString()
+    {
+        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        Random random = new Random();
+        return new string(Enumerable.Repeat(chars, randomStringMaxlength)
+          .Select(s => s[random.Next(s.Length)]).ToArray());
+    }
+
+    //genarate Signature for generated random string using keyed hash algorithm HMACSHA1
+    // and if its match with what Client has sent then send response accepted else Rejected
+    private string ComputeSignature(string input)
+    {
+        using (var hmac = new HMACSHA1(Encoding.UTF8.GetBytes("vilas_secret_key")))
+        {
+            byte[] hashBytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(input));
+            return Convert.ToBase64String(hashBytes);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}
